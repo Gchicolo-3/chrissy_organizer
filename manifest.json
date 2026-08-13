@@ -1,0 +1,9 @@
+{
+  "name": "Brain Dump",
+  "short_name": "Brain Dump",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f9fafb",
+  "theme_color": "#2563eb",
+  "icons": []
+}
