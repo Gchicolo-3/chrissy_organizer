@@ -56,15 +56,11 @@ For local dev, copy `.env.example` to `.env.local` and fill these in, then
 
 ## Deploying — important
 
-**The Vercel project is NOT connected to this GitHub repo.** Deployments are
-direct uploads (Vercel CLI / API), so pushing to GitHub does not deploy
-anything by itself. Either:
+The Vercel project **is connected to this GitHub repo**: pushes to `main`
+deploy to production, and pushes to other branches build previews.
 
-1. Deploy manually: `npx vercel --prod` from the repo root (log in as the
-   account that owns `chrissy-organizer`), or
-2. Better: connect the repo in Vercel (Project → Settings → Git) so pushes
-   to `main` auto-deploy, and this repo becomes the single source of truth.
-
-Until the repo is connected, keep this repo in sync with whatever is
-deployed — the previous incident where the deployed code was newer than the
-repo made the bug much harder to trace.
+**Deploy through git only.** The project also accepts direct uploads
+(`vercel --prod` / API), and several deployments were made that way —
+which is how production ended up running code that was never committed,
+making the caching bug much harder to trace. Treat this repo as the single
+source of truth: commit, push, let Vercel build.
