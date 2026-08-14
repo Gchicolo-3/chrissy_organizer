@@ -1,52 +1,65 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { ALL_BUCKETS, Bucket } from "@/lib/buckets";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ALL_BUCKETS, BUCKET_STYLE, Task } from "@/lib/buckets";
 
-type Task = {
-  id: string;
-  bucket: Bucket;
-  task_text: string;
-  raw_transcript: string;
-  completed: boolean;
-  created_at: string;
-};
-
-const BUCKET_COLORS: Record<string, string> = {
-  Cheer: "bg-pink-100 text-pink-800 border-pink-300",
-  MFFA: "bg-purple-100 text-purple-800 border-purple-300",
-  "Real Estate": "bg-blue-100 text-blue-800 border-blue-300",
-  "Kids/Family": "bg-amber-100 text-amber-800 border-amber-300",
-  "Blind Works Job": "bg-teal-100 text-teal-800 border-teal-300",
-  "HUNS Job": "bg-indigo-100 text-indigo-800 border-indigo-300",
-  Unsorted: "bg-gray-100 text-gray-700 border-gray-300",
-};
+type Tab = "capture" | "tasks";
 
 export default function Home() {
-  const [tab, setTab] = useState<"capture" | "tasks">("capture");
+  const [tab, setTab] = useState<Tab>("capture");
+
+  // Capture state
   const [text, setText] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [lastSaved, setLastSaved] = useState<Task | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [sorting, setSorting] = useState(false);
+  const [justSorted, setJustSorted] = useState<Task[]>([]);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  async function loadTasks() {
-    setLoading(true);
-    const res = await fetch("/api/tasks");
-    const data = await res.json();
-    setTasks(data.tasks || []);
-    setLoading(false);
-  }
+  // Tasks state
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [showDone, setShowDone] = useState(false);
+
+  // Undo-delete toast
+  const [pendingUndo, setPendingUndo] = useState<Task | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadTasks = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setLoadError(null);
+    }
+    try {
+      const res = await fetch("/api/tasks", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Couldn't load tasks");
+      setTasks(data.tasks || []);
+    } catch (e: any) {
+      if (!silent) setLoadError(e?.message || "Couldn't load tasks");
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (tab === "tasks") loadTasks();
-  }, [tab]);
+  }, [tab, loadTasks]);
+
+  // Refresh quietly when she comes back to the app.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadTasks(true);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [loadTasks]);
 
   async function handleSort() {
-    if (!text.trim() || saving) return;
-    setSaving(true);
-    setLastSaved(null);
+    if (!text.trim() || sorting) return;
+    setSorting(true);
+    setJustSorted([]);
+    setCaptureError(null);
     try {
       const res = await fetch("/api/classify", {
         method: "POST",
@@ -54,141 +67,429 @@ export default function Home() {
         body: JSON.stringify({ transcript: text }),
       });
       const data = await res.json();
-      if (data.task) {
-        setLastSaved(data.task);
-        setText("");
-        textareaRef.current?.focus();
+      if (!res.ok || !data.tasks?.length) {
+        throw new Error(data.error || "Something went wrong. Try again?");
       }
+      setJustSorted(data.tasks);
+      setTasks((prev) => [...data.tasks, ...prev]);
+      setText("");
+    } catch (e: any) {
+      setCaptureError(e?.message || "No connection. Your words are still in the box — try again.");
     } finally {
-      setSaving(false);
+      setSorting(false);
     }
   }
 
   async function toggleComplete(task: Task) {
+    const completed = !task.completed;
     setTasks((prev) =>
-      prev.map((t) =>
-        t.id === task.id ? { ...t, completed: !t.completed } : t
-      )
+      prev.map((t) => (t.id === task.id ? { ...t, completed } : t))
     );
-    await fetch(`/api/tasks/${task.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ completed: !task.completed }),
-    });
+    try {
+      const res = await fetch(`/api/tasks/${task.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ completed }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setTasks((prev) =>
+        prev.map((t) => (t.id === task.id ? { ...t, completed: !completed } : t))
+      );
+    }
   }
 
-  async function deleteTask(id: string) {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
-    await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+  async function deleteTask(task: Task) {
+    setTasks((prev) => prev.filter((t) => t.id !== task.id));
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setPendingUndo(task);
+    undoTimer.current = setTimeout(() => setPendingUndo(null), 6000);
+    try {
+      await fetch(`/api/tasks/${task.id}`, { method: "DELETE" });
+    } catch {
+      // Row may survive; next refresh will show it again.
+    }
   }
 
+  async function undoDelete() {
+    const task = pendingUndo;
+    if (!task) return;
+    setPendingUndo(null);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    try {
+      const res = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bucket: task.bucket,
+          task_text: task.task_text,
+          raw_transcript: task.raw_transcript,
+          completed: task.completed,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.task) {
+        setTasks((prev) => [data.task, ...prev]);
+      }
+    } catch {
+      // If restore fails, a refresh keeps state honest.
+    }
+  }
+
+  const open = tasks.filter((t) => !t.completed);
+  const done = tasks.filter((t) => t.completed);
   const grouped = ALL_BUCKETS.map((bucket) => ({
     bucket,
-    items: tasks.filter((t) => t.bucket === bucket && !t.completed),
+    items: open.filter((t) => t.bucket === bucket),
   })).filter((g) => g.items.length > 0);
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <header className="bg-white border-b px-4 py-3 sticky top-0 z-10">
-        <h1 className="text-lg font-semibold">Brain Dump</h1>
+    <div className="min-h-screen bg-paper flex flex-col">
+      <header
+        className="sticky top-0 z-10 bg-paper/90 backdrop-blur px-5 pb-3"
+        style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 14px)" }}
+      >
+        <h1 className="text-[22px] font-bold tracking-tight text-ink">
+          {tab === "capture" ? "Brain Dump" : "Tasks"}
+        </h1>
+        <p className="text-[13px] text-stone-500 mt-0.5">
+          {tab === "capture"
+            ? "Talk it out. It sorts itself."
+            : open.length === 0
+              ? "All clear."
+              : `${open.length} thing${open.length === 1 ? "" : "s"} on your plate`}
+        </p>
       </header>
 
-      <main className="flex-1 px-4 py-4 pb-24">
+      <main className="flex-1 px-5 pt-2 pb-40">
         {tab === "capture" && (
-          <div className="flex flex-col gap-3">
-            <p className="text-sm text-gray-500">
-              Tap the box, hit the mic on your keyboard, talk. Then hit Sort
-              it.
-            </p>
-            <textarea
-              ref={textareaRef}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Talk here..."
-              rows={6}
-              autoFocus
-              className="w-full rounded-2xl border-2 border-gray-200 p-4 text-lg focus:border-blue-400 focus:outline-none resize-none"
-            />
+          <div className="flex flex-col gap-4">
+            <div className="rounded-3xl bg-white ring-1 ring-stone-200 shadow-sm p-1.5">
+              <textarea
+                ref={textareaRef}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Tap here, hit the mic, and just talk — ramble all you want."
+                rows={7}
+                autoFocus
+                enterKeyHint="done"
+                className="w-full rounded-[20px] p-4 text-[17px] leading-relaxed bg-transparent placeholder:text-stone-400 focus:outline-none resize-none"
+              />
+            </div>
+
             <button
               onClick={handleSort}
-              disabled={saving || !text.trim()}
-              className="w-full rounded-2xl bg-blue-600 text-white text-lg font-semibold py-4 disabled:opacity-40 active:scale-95 transition"
+              disabled={sorting || !text.trim()}
+              className="w-full rounded-2xl bg-ink text-white text-[17px] font-semibold py-4 min-h-[56px] shadow-sm disabled:opacity-30 active:scale-[0.98] transition-transform"
             >
-              {saving ? "Sorting..." : "Sort it"}
+              {sorting ? "Sorting it out…" : "Sort it"}
             </button>
 
-            {lastSaved && (
-              <div
-                className={`rounded-xl border p-3 text-sm ${
-                  BUCKET_COLORS[lastSaved.bucket] || BUCKET_COLORS.Unsorted
-                }`}
-              >
-                Added to <strong>{lastSaved.bucket}</strong>:{" "}
-                {lastSaved.task_text}
+            {captureError && (
+              <div className="animate-card-in rounded-2xl bg-red-50 ring-1 ring-red-200 text-red-800 px-4 py-3 text-[15px]">
+                {captureError}
+              </div>
+            )}
+
+            {justSorted.length > 0 && (
+              <div className="flex flex-col gap-2 pt-1">
+                <p className="text-[13px] font-medium text-stone-500 px-1">
+                  Saved {justSorted.length}{" "}
+                  {justSorted.length === 1 ? "task" : "tasks"} ✓
+                </p>
+                {justSorted.map((t, i) => {
+                  const s = BUCKET_STYLE[t.bucket] || BUCKET_STYLE.Unsorted;
+                  return (
+                    <div
+                      key={t.id}
+                      className={`animate-card-in rounded-2xl ring-1 px-4 py-3 ${s.card}`}
+                      style={{ animationDelay: `${i * 60}ms` }}
+                    >
+                      <span className="block text-[11px] font-semibold uppercase tracking-wider opacity-70">
+                        {t.bucket}
+                      </span>
+                      <span className="block text-[15px] mt-0.5">
+                        {t.task_text}
+                      </span>
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={() => setTab("tasks")}
+                  className="self-start px-1 py-2 text-[15px] font-medium text-stone-600 underline underline-offset-4 decoration-stone-300"
+                >
+                  See all tasks →
+                </button>
               </div>
             )}
           </div>
         )}
 
         {tab === "tasks" && (
-          <div className="flex flex-col gap-4">
-            {loading && <p className="text-sm text-gray-400">Loading...</p>}
-            {!loading && grouped.length === 0 && (
-              <p className="text-sm text-gray-400">
-                Nothing yet. Go dump something.
-              </p>
-            )}
-            {grouped.map((g) => (
-              <div key={g.bucket}>
-                <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
-                  {g.bucket}
-                </h2>
-                <div className="flex flex-col gap-2">
-                  {g.items.map((t) => (
-                    <div
-                      key={t.id}
-                      className="flex items-center gap-3 bg-white border rounded-xl px-3 py-3"
-                    >
-                      <button
-                        onClick={() => toggleComplete(t)}
-                        aria-label="complete"
-                        className="w-6 h-6 rounded-full border-2 border-gray-300 flex-shrink-0"
-                      />
-                      <span className="flex-1 text-sm">{t.task_text}</span>
-                      <button
-                        onClick={() => deleteTask(t.id)}
-                        aria-label="delete"
-                        className="text-gray-300 text-sm"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
+          <div className="flex flex-col gap-6">
+            {loading && (
+              <div className="flex flex-col gap-3 pt-2">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="h-14 rounded-2xl bg-stone-200/60 animate-pulse"
+                  />
+                ))}
               </div>
-            ))}
+            )}
+
+            {!loading && loadError && (
+              <div className="rounded-2xl bg-red-50 ring-1 ring-red-200 text-red-800 px-4 py-3 text-[15px]">
+                {loadError}
+                <button
+                  onClick={() => loadTasks()}
+                  className="block mt-2 font-semibold underline underline-offset-4"
+                >
+                  Try again
+                </button>
+              </div>
+            )}
+
+            {!loading && !loadError && grouped.length === 0 && (
+              <div className="pt-16 text-center">
+                <p className="text-4xl mb-3">🎉</p>
+                <p className="text-[15px] text-stone-500">
+                  Nothing on the list.
+                  <br />
+                  Go dump something.
+                </p>
+              </div>
+            )}
+
+            {!loading &&
+              grouped.map((g) => {
+                const s = BUCKET_STYLE[g.bucket];
+                return (
+                  <section key={g.bucket}>
+                    <div className="flex items-center gap-2 px-1 mb-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${s.dot}`} />
+                      <h2 className="text-[13px] font-semibold uppercase tracking-wider text-stone-600">
+                        {g.bucket}
+                      </h2>
+                      <span className="text-[13px] text-stone-400">
+                        {g.items.length}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {g.items.map((t) => (
+                        <div
+                          key={t.id}
+                          className="flex items-center bg-white ring-1 ring-stone-200 rounded-2xl shadow-sm pr-1"
+                        >
+                          <button
+                            onClick={() => toggleComplete(t)}
+                            aria-label={`Mark "${t.task_text}" done`}
+                            className="shrink-0 w-14 min-h-[56px] flex items-center justify-center"
+                          >
+                            <span className="w-[26px] h-[26px] rounded-full border-2 border-stone-300 transition-colors" />
+                          </button>
+                          <span className="flex-1 py-4 pr-2 text-[16px] leading-snug text-ink">
+                            {t.task_text}
+                          </span>
+                          <button
+                            onClick={() => deleteTask(t)}
+                            aria-label={`Delete "${t.task_text}"`}
+                            className="shrink-0 w-11 min-h-[56px] flex items-center justify-center text-stone-300 active:text-stone-500"
+                          >
+                            <svg
+                              width="16"
+                              height="16"
+                              viewBox="0 0 16 16"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                            >
+                              <path d="M3 3l10 10M13 3L3 13" />
+                            </svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
+
+            {!loading && done.length > 0 && (
+              <section className="pb-2">
+                <button
+                  onClick={() => setShowDone((v) => !v)}
+                  className="flex items-center gap-2 px-1 mb-2 min-h-[44px]"
+                >
+                  <h2 className="text-[13px] font-semibold uppercase tracking-wider text-stone-400">
+                    Done · {done.length}
+                  </h2>
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    className={`text-stone-400 transition-transform ${showDone ? "rotate-180" : ""}`}
+                  >
+                    <path d="M2 4l4 4 4-4" />
+                  </svg>
+                </button>
+                {showDone && (
+                  <div className="flex flex-col gap-2">
+                    {done.map((t) => (
+                      <div
+                        key={t.id}
+                        className="flex items-center bg-stone-100/70 ring-1 ring-stone-200/70 rounded-2xl pr-1"
+                      >
+                        <button
+                          onClick={() => toggleComplete(t)}
+                          aria-label={`Mark "${t.task_text}" not done`}
+                          className="shrink-0 w-14 min-h-[52px] flex items-center justify-center"
+                        >
+                          <span className="w-[26px] h-[26px] rounded-full bg-stone-400 flex items-center justify-center">
+                            <svg
+                              width="13"
+                              height="13"
+                              viewBox="0 0 14 14"
+                              fill="none"
+                              stroke="white"
+                              strokeWidth="2.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <path d="M2 7.5l3.2 3.2L12 4" />
+                            </svg>
+                          </span>
+                        </button>
+                        <span className="flex-1 py-3.5 pr-2 text-[15px] text-stone-400 line-through">
+                          {t.task_text}
+                        </span>
+                        <button
+                          onClick={() => deleteTask(t)}
+                          aria-label={`Delete "${t.task_text}"`}
+                          className="shrink-0 w-11 min-h-[52px] flex items-center justify-center text-stone-300"
+                        >
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                          >
+                            <path d="M3 3l10 10M13 3L3 13" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
           </div>
         )}
       </main>
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t flex">
-        <button
+      {pendingUndo && (
+        <div
+          className="fixed left-5 right-5 z-30 animate-toast-in"
+          style={{ bottom: "calc(var(--safe-bottom) + 84px)" }}
+        >
+          <div className="flex items-center justify-between bg-ink text-white rounded-2xl px-4 py-3 shadow-lg">
+            <span className="text-[14px] truncate pr-3">Task deleted</span>
+            <button
+              onClick={undoDelete}
+              className="text-[14px] font-semibold text-amber-300 min-h-[32px] px-2"
+            >
+              Undo
+            </button>
+          </div>
+        </div>
+      )}
+
+      <nav
+        className="fixed bottom-0 left-0 right-0 z-20 bg-white/95 backdrop-blur border-t border-stone-200 flex"
+        style={{ paddingBottom: "var(--safe-bottom)" }}
+      >
+        <TabButton
+          active={tab === "capture"}
+          label="Capture"
           onClick={() => setTab("capture")}
-          className={`flex-1 py-3 text-sm font-medium ${
-            tab === "capture" ? "text-blue-600" : "text-gray-400"
-          }`}
-        >
-          Capture
-        </button>
-        <button
+          icon={
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+            </svg>
+          }
+        />
+        <TabButton
+          active={tab === "tasks"}
+          label="Tasks"
           onClick={() => setTab("tasks")}
-          className={`flex-1 py-3 text-sm font-medium ${
-            tab === "tasks" ? "text-blue-600" : "text-gray-400"
-          }`}
-        >
-          Tasks
-        </button>
+          badge={open.length > 0 ? open.length : undefined}
+          icon={
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M4 6.5l1.7 1.7L9 4.9M4 13l1.7 1.7L9 11.4M4 19.5l1.7 1.7L9 17.9" />
+              <path d="M12.5 7h7M12.5 13.5h7M12.5 20h7" />
+            </svg>
+          }
+        />
       </nav>
     </div>
+  );
+}
+
+function TabButton({
+  active,
+  label,
+  icon,
+  onClick,
+  badge,
+}: {
+  active: boolean;
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  badge?: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative flex-1 flex flex-col items-center gap-0.5 pt-2.5 pb-2 min-h-[58px] ${
+        active ? "text-ink" : "text-stone-400"
+      }`}
+    >
+      <span className="relative">
+        {icon}
+        {badge !== undefined && (
+          <span className="absolute -top-1.5 -right-3 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[11px] font-semibold flex items-center justify-center">
+            {badge > 99 ? "99" : badge}
+          </span>
+        )}
+      </span>
+      <span className="text-[11px] font-medium">{label}</span>
+    </button>
   );
 }
