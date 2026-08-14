@@ -1,26 +1,45 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { getSupabase } from "@/lib/supabase";
+import { isBucket } from "@/lib/buckets";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const body = await req.json();
-  const update: Record<string, any> = {};
+  if (!UUID_RE.test(params.id)) {
+    return NextResponse.json({ error: "Invalid task id" }, { status: 400 });
+  }
 
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
+
+  const update: Record<string, unknown> = {};
   if (typeof body.completed === "boolean") {
     update.completed = body.completed;
     update.completed_at = body.completed ? new Date().toISOString() : null;
   }
-  if (body.task_text) update.task_text = body.task_text;
-  if (body.bucket) update.bucket = body.bucket;
+  if (typeof body.task_text === "string" && body.task_text.trim()) {
+    update.task_text = body.task_text.trim().slice(0, 200);
+  }
+  if (isBucket(body.bucket)) {
+    update.bucket = body.bucket;
+  }
 
-  const { data, error } = await supabase
+  if (Object.keys(update).length === 0) {
+    return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
+  }
+
+  const { data, error } = await getSupabase()
     .from("tasks")
     .update(update)
     .eq("id", params.id)
@@ -35,10 +54,17 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const { error } = await supabase.from("tasks").delete().eq("id", params.id);
+  if (!UUID_RE.test(params.id)) {
+    return NextResponse.json({ error: "Invalid task id" }, { status: 400 });
+  }
+
+  const { error } = await getSupabase()
+    .from("tasks")
+    .delete()
+    .eq("id", params.id);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

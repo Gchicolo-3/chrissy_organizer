@@ -1,63 +1,70 @@
-# Brain Dump
+# Brain Dump (chrissy-organizer)
 
-Christine talks, the iPhone keyboard mic turns it into text, Claude sorts it
-into her buckets, it saves to a list she can check off.
+Voice brain-dump app for Christine. She taps the box, talks with the iPhone
+keyboard mic, hits **Sort it**, and Claude splits the ramble into separate
+tasks, sorts each into one of her buckets, and saves them. The **Tasks** tab
+shows everything grouped by bucket.
 
-Buckets: Cheer, MFFA, Real Estate, Kids/Family, Blind Works Job, HUNS Job.
-Anything unclear lands in Unsorted.
+Live at **https://chrissy-organizer.vercel.app**
 
-## What you need before it works
+## Stack
 
-1. A Supabase project (her own, separate from focusedoutreach and
-   leaselenz-prod).
-2. An Anthropic API key from console.anthropic.com. This is different from
-   your claude.ai login, it's a real API key for a real deployed app.
+- **Next.js 14** (app router) on Vercel — project `chrissy-organizer`
+- **Supabase** — one `tasks` table (`supabase/migration.sql`)
+- **Claude API** (`claude-haiku-4-5`) via the official `@anthropic-ai/sdk`,
+  using structured outputs (JSON schema) so the split/classify result is
+  always valid JSON — no fence-stripping or parse retries
 
-## Step by step
+## How it works
 
-**1. Make her Supabase project**
-Go to supabase.com, new project, name it something like
-`christine-brain-dump`. Once it's done spinning up, go to the SQL Editor in
-the left sidebar, paste in everything from `supabase/migration.sql` in this
-folder, hit run. That creates the one table this app needs.
+- `POST /api/classify` — takes the raw transcript, asks Haiku to split it
+  into tasks (each assigned to a bucket via an enum-constrained schema),
+  validates buckets server-side, and batch-inserts all rows in one call.
+  If the model call fails for any reason, the dump is still saved as a
+  single Unsorted task so nothing she says is ever lost.
+- `GET /api/tasks` — returns all tasks, newest first.
+- `POST /api/tasks` — manual insert (used by undo-after-delete).
+- `PATCH/DELETE /api/tasks/[id]` — complete/uncomplete, edit, delete.
 
-Then go to Project Settings, API. Grab two things:
-- Project URL
-- anon public key
+Buckets live in `lib/buckets.ts` (names, type guard, and per-bucket colors).
+To add or rename a bucket, edit that file and the classify system prompt in
+`app/api/classify/route.ts`.
 
-**2. Push this to GitHub**
-Same as always. New repo, name it `christine-brain-dump`, check "Add a
-README file," check "Add .gitignore" and pick Node from the dropdown, skip
-the license. Then push this folder's code into it (or hand this whole
-folder to Claude Code and tell it to init the repo and push).
+## The bug this rebuild fixed (do not regress this)
 
-**3. Connect it to Vercel**
-Import the repo in Vercel same as any other project. Before you deploy, add
-three environment variables in the Vercel project settings:
+Every API route exports `export const dynamic = "force-dynamic"`.
+
+Without it, Next.js 14 **statically prerenders a GET route handler at build
+time** and Vercel serves that frozen snapshot from its edge cache forever.
+That is exactly what happened to `/api/tasks`: inserts succeeded, but the
+Tasks tab always received the empty `{"tasks":[]}` captured when the build
+ran against an empty table (confirmed in Vercel runtime logs — the requests
+were served `cache=HIT` from the static prerender and never reached a
+function). If you add a new API route, copy the `dynamic`/`runtime` exports
+from an existing one.
+
+## Environment variables (set in the Vercel project)
 
 ```
-NEXT_PUBLIC_SUPABASE_URL = (from step 1)
-NEXT_PUBLIC_SUPABASE_ANON_KEY = (from step 1)
-ANTHROPIC_API_KEY = (from console.anthropic.com)
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+ANTHROPIC_API_KEY=
 ```
 
-Deploy. You'll get a URL.
+For local dev, copy `.env.example` to `.env.local` and fill these in, then
+`npm install && npm run dev`.
 
-**4. Get it on her phone**
-Open the URL in Safari on her iPhone, tap the share icon, "Add to Home
-Screen." Now it opens like a real app, no browser bar.
+## Deploying — important
 
-## How she actually uses it
+**The Vercel project is NOT connected to this GitHub repo.** Deployments are
+direct uploads (Vercel CLI / API), so pushing to GitHub does not deploy
+anything by itself. Either:
 
-Open the app, tap the text box, tap the mic icon on the iPhone keyboard,
-talk. Tap "Sort it." It shows up under the right bucket in the Tasks tab.
-Tap the circle to check something off.
+1. Deploy manually: `npx vercel --prod` from the repo root (log in as the
+   account that owns `chrissy-organizer`), or
+2. Better: connect the repo in Vercel (Project → Settings → Git) so pushes
+   to `main` auto-deploy, and this repo becomes the single source of truth.
 
-## If something's off
-
-- Nothing sorts / spinner never stops: check the ANTHROPIC_API_KEY is set
-  right in Vercel and redeploy.
-- Tasks tab stays empty: check the two Supabase env vars, and confirm the
-  migration actually ran (Table Editor should show a `tasks` table).
-- Everything lands in Unsorted: normal for weird phrasing, the model plays
-  it safe. You can rename or tune the bucket list in `lib/buckets.ts`.
+Until the repo is connected, keep this repo in sync with whatever is
+deployed — the previous incident where the deployed code was newer than the
+repo made the bug much harder to trace.
