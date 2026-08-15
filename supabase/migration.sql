@@ -10,6 +10,10 @@ create table if not exists public.tasks (
   completed_at timestamptz
 );
 
+-- 2026-08-15: optional due date, powers the /api/calendar ICS feed.
+-- Safe to run on an existing table.
+alter table public.tasks add column if not exists due_at timestamptz;
+
 alter table public.tasks enable row level security;
 
 -- no login on this app, so we allow the anon key full access to this one table.

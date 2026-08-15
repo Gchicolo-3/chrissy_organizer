@@ -1,7 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ALL_BUCKETS, BUCKET_STYLE, Task } from "@/lib/buckets";
+import { ALL_BUCKETS, BUCKET_STYLE, Bucket, Task } from "@/lib/buckets";
+
+function formatDue(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 type Tab = "capture" | "tasks";
 
@@ -24,6 +34,47 @@ export default function Home() {
   // Undo-delete toast
   const [pendingUndo, setPendingUndo] = useState<Task | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Edit sheet
+  const [editing, setEditing] = useState<Task | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editBucket, setEditBucket] = useState<Bucket>("Unsorted");
+  const [editDueCleared, setEditDueCleared] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+
+  function openEdit(task: Task) {
+    setEditing(task);
+    setEditText(task.task_text);
+    setEditBucket(task.bucket);
+    setEditDueCleared(false);
+  }
+
+  async function saveEdit() {
+    if (!editing || !editText.trim() || editSaving) return;
+    setEditSaving(true);
+    const patch: Record<string, unknown> = {
+      task_text: editText.trim(),
+      bucket: editBucket,
+    };
+    if (editDueCleared) patch.due_at = null;
+    try {
+      const res = await fetch(`/api/tasks/${editing.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.task) throw new Error(data.error);
+      setTasks((prev) =>
+        prev.map((t) => (t.id === editing.id ? { ...t, ...data.task } : t))
+      );
+      setEditing(null);
+    } catch {
+      // Keep the sheet open so nothing she typed is lost.
+    } finally {
+      setEditSaving(false);
+    }
+  }
 
   const loadTasks = useCallback(async (silent = false) => {
     if (!silent) {
@@ -288,9 +339,30 @@ export default function Home() {
                           >
                             <span className="w-[26px] h-[26px] rounded-full border-2 border-stone-300 transition-colors" />
                           </button>
-                          <span className="flex-1 py-4 pr-2 text-[16px] leading-snug text-ink">
-                            {t.task_text}
-                          </span>
+                          <button
+                            onClick={() => openEdit(t)}
+                            className="flex-1 py-4 pr-2 text-left"
+                          >
+                            <span className="block text-[16px] leading-snug text-ink">
+                              {t.task_text}
+                            </span>
+                            {t.due_at && (
+                              <span className="mt-1 inline-flex items-center gap-1 text-[12px] font-medium text-stone-500">
+                                <svg
+                                  width="11"
+                                  height="11"
+                                  viewBox="0 0 12 12"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.5"
+                                >
+                                  <circle cx="6" cy="6" r="5" />
+                                  <path d="M6 3.5V6l1.8 1.2" strokeLinecap="round" />
+                                </svg>
+                                {formatDue(t.due_at)}
+                              </span>
+                            )}
+                          </button>
                           <button
                             onClick={() => deleteTask(t)}
                             aria-label={`Delete "${t.task_text}"`}
@@ -393,6 +465,83 @@ export default function Home() {
           </div>
         )}
       </main>
+
+      {editing && (
+        <div className="fixed inset-0 z-40 flex items-end">
+          <button
+            aria-label="Close"
+            onClick={() => setEditing(null)}
+            className="absolute inset-0 bg-ink/30 backdrop-blur-[2px]"
+          />
+          <div
+            className="relative w-full bg-white rounded-t-3xl shadow-2xl px-5 pt-5 animate-toast-in"
+            style={{ paddingBottom: "calc(var(--safe-bottom) + 20px)" }}
+          >
+            <div className="mx-auto w-10 h-1 rounded-full bg-stone-200 mb-4" />
+            <p className="text-[13px] font-semibold uppercase tracking-wider text-stone-500 mb-2">
+              Edit task
+            </p>
+            <textarea
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              rows={2}
+              className="w-full rounded-2xl ring-1 ring-stone-200 p-4 text-[16px] leading-snug focus:outline-none focus:ring-2 focus:ring-stone-400 resize-none"
+            />
+            {editing.due_at && !editDueCleared && (
+              <button
+                onClick={() => setEditDueCleared(true)}
+                className="mt-2 inline-flex items-center gap-2 rounded-full bg-stone-100 ring-1 ring-stone-200 px-3 py-2 text-[13px] font-medium text-stone-600"
+              >
+                {formatDue(editing.due_at)}
+                <span aria-hidden className="text-stone-400">✕</span>
+              </button>
+            )}
+            {editDueCleared && (
+              <p className="mt-2 text-[13px] text-stone-400">
+                Date will be removed when you save.
+              </p>
+            )}
+            <p className="text-[13px] font-semibold uppercase tracking-wider text-stone-500 mt-4 mb-2">
+              Bucket
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {ALL_BUCKETS.map((b) => {
+                const s = BUCKET_STYLE[b];
+                const active = editBucket === b;
+                return (
+                  <button
+                    key={b}
+                    onClick={() => setEditBucket(b)}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-2 min-h-[40px] text-[14px] font-medium ring-1 transition-colors ${
+                      active
+                        ? "bg-ink text-white ring-ink"
+                        : `${s.chip}`
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${active ? "bg-white" : s.dot}`} />
+                    {b}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => setEditing(null)}
+                className="flex-1 rounded-2xl ring-1 ring-stone-200 text-stone-600 text-[16px] font-semibold py-3.5 min-h-[52px]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={editSaving || !editText.trim()}
+                className="flex-[2] rounded-2xl bg-ink text-white text-[16px] font-semibold py-3.5 min-h-[52px] disabled:opacity-30"
+              >
+                {editSaving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pendingUndo && (
         <div
