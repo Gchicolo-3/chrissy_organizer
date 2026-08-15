@@ -26,9 +26,31 @@ Live at **https://chrissy-organizer.vercel.app**
 - `POST /api/tasks` — manual insert (used by undo-after-delete).
 - `PATCH/DELETE /api/tasks/[id]` — complete/uncomplete, edit, delete.
 
+- `GET /api/calendar` — ICS feed of tasks that have a due date. Subscribe on
+  iPhone: Settings → Calendar → Accounts → Add Account → Other → Add
+  Subscribed Calendar → `https://chrissy-organizer.vercel.app/api/calendar`.
+  Events land in Apple Calendar and refresh automatically.
+
+Tapping a task in the Tasks tab opens an edit sheet: change the wording, tap
+a bucket chip to move it, or remove a wrongly-guessed date.
+
 Buckets live in `lib/buckets.ts` (names, type guard, and per-bucket colors).
 To add or rename a bucket, edit that file and the classify system prompt in
 `app/api/classify/route.ts`.
+
+### One-time setup for due dates / calendar
+
+The classifier extracts due dates ("tomorrow night", "5pm Aug 20") into a
+`due_at` column. That column must be added once, in the Supabase dashboard →
+SQL Editor, by running:
+
+```sql
+alter table public.tasks add column if not exists due_at timestamptz;
+```
+
+Until it's run, everything else works normally — the app just saves tasks
+without dates and the calendar feed stays empty. Times are interpreted in
+America/New_York.
 
 ## The bug this rebuild fixed (do not regress this)
 

@@ -34,6 +34,16 @@ export async function PATCH(
   if (isBucket(body.bucket)) {
     update.bucket = body.bucket;
   }
+  if ("due_at" in body) {
+    if (body.due_at === null) {
+      update.due_at = null;
+    } else if (
+      typeof body.due_at === "string" &&
+      !Number.isNaN(Date.parse(body.due_at))
+    ) {
+      update.due_at = new Date(body.due_at).toISOString();
+    }
+  }
 
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });

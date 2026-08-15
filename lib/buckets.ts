@@ -23,6 +23,7 @@ export type Task = {
   completed: boolean;
   created_at: string;
   completed_at: string | null;
+  due_at?: string | null;
 };
 
 // Display styling per bucket. Soft tinted surfaces with deep, readable text.
