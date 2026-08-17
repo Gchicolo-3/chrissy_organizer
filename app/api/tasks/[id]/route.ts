@@ -3,6 +3,7 @@ import { getSupabase } from "@/lib/supabase";
 import { isBucket } from "@/lib/buckets";
 
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 export const runtime = "nodejs";
 
 const UUID_RE =

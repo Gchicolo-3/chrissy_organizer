@@ -4,6 +4,7 @@ import { getSupabase } from "@/lib/supabase";
 // ICS feed for Apple Calendar (Settings → Calendar → Accounts → Add
 // Subscribed Calendar → this URL). Tasks with a due date become events.
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 export const runtime = "nodejs";
 
 function icsEscape(s: string): string {
@@ -31,12 +32,17 @@ export async function GET() {
     // than breaking the subscription.
     return icsResponse([]);
   }
-  return icsResponse(data ?? []);
+  return icsResponse((data ?? []) as CalendarTask[]);
 }
 
-function icsResponse(
-  tasks: { id: string; task_text: string; bucket: string; due_at: string }[]
-) {
+type CalendarTask = {
+  id: string;
+  task_text: string;
+  bucket: string;
+  due_at: string;
+};
+
+function icsResponse(tasks: CalendarTask[]) {
   const now = icsUtc(new Date().toISOString());
   const lines = [
     "BEGIN:VCALENDAR",

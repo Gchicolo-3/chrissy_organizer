@@ -18,6 +18,12 @@ export function getSupabase(): SupabaseClient {
 
   client = createClient(url, key, {
     auth: { persistSession: false },
+    global: {
+      // Next.js patches global fetch and can serve route-handler fetches from
+      // its persistent Data Cache even on force-dynamic routes — which made
+      // /api/calendar return deleted rows. Every Supabase request must skip it.
+      fetch: (input, init) => fetch(input, { ...init, cache: "no-store" }),
+    },
   });
   return client;
 }

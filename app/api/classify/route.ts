@@ -5,6 +5,7 @@ import { ALL_BUCKETS, isBucket } from "@/lib/buckets";
 
 // Never statically cache API routes — every request must hit the function.
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
