@@ -6,6 +6,7 @@ import { isBucket } from "@/lib/buckets";
 // Vercel serves the frozen build-time snapshot forever — the exact bug that
 // made the Tasks tab show nothing while inserts were succeeding.
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 export const runtime = "nodejs";
 
 export async function GET() {
